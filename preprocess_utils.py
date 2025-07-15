@@ -54,8 +54,6 @@ def extract_skills_section(text):
 def extract_experience_years(text):
     text = text.lower()
     date_pattern = r"[jan|feb|mar|apr|may|jun|june|jul|july|aug|sep|sept|oct|nov|dec][a-z]*\s*\d{4}"
-    matches = re.findall(date_pattern, text)
-    dates = re.findall(rf"{date_pattern}", text)
 
     # Extract date pairs (assume they appear in order: start -> end)
     raw_ranges = re.findall(
