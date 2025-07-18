@@ -84,24 +84,47 @@ def preprocess_text(text):
     text = text.translate(str.maketrans('', '', punctuation))
     return text
 
+def extract_degree_requirements(job_description):
+    # Lowercase for simpler matching
+    jd = job_description.lower()
 
-def extract_degree_requirements(job_text):
-    job_text = job_text.lower()
+    # Education patterns
+    degrees = [
+        "phd", "doctorate", "m.d.", "md", "dphil",
+        "master", "m.sc", "ms", "mba", "m.a.",
+        "bachelor", "b.sc", "bs", "b.a.", "beng",
+        "associate", "diploma", "high school", "ged"
+    ]
+    degree_pattern = '|'.join(degrees)
 
-    degree_levels = ["phd", "doctorate", "master", "bachelor", "associate", "mba"]
-    required = None
-    preferred = None
+    # Sentence patterns
+    required_patterns = [
+        r"(required|must have|necessar(y|ily))[^.]*(" + degree_pattern + r")[^.]*\."
+    ]
+    preferred_patterns = [
+        r"(preferred|ideally|nice to have|would be a plus)[^.]*(" + degree_pattern + r")[^.]*\."
+    ]
 
-    for level in degree_levels:
-        pattern_required = rf"(?:require(?:d)?|must have|need(?:ed)?)[^\\.\\n]*\b{level}"
-        pattern_preferred = rf"(?:prefer(?:red)?|nice to have|ideal[^\\.\\n]*\b{level})"
+    required = []
+    preferred = []
 
-        if re.search(pattern_required, job_text):
-            required = level
-        if re.search(pattern_preferred, job_text):
-            preferred = level
+    for pattern in required_patterns:
+        matches = re.findall(pattern, jd)
+        required.extend([" ".join(match) for match in matches])
 
-    return required, preferred
+    for pattern in preferred_patterns:
+        matches = re.findall(pattern, jd)
+        preferred.extend([" ".join(match) for match in matches])
+
+    # Cleanup to get full sentences instead of just tuples
+    required_sentences = [m.group(0) for m in re.finditer(required_patterns[0], jd)]
+    preferred_sentences = [m.group(0) for m in re.finditer(preferred_patterns[0], jd)]
+
+    return {
+        "required_education": required_sentences or ["Not found"],
+        "preferred_education": preferred_sentences or ["Not found"]
+    }
+
 
 def extract_most_recent_education(resume_text):
     education_text = extract_education_section(resume_text).lower()
@@ -124,3 +147,39 @@ def extract_most_recent_education(resume_text):
         return degree_entries[0][0]  # most recent/highest degree
 
     return None
+
+
+
+# List of education levels in order of hierarchy
+education_levels = [
+    "PhD", "Doctorate", "M.D.", "MD", "DPhil",
+    "Master", "M.Sc", "M.S.", "MEng", "MBA", "M.A.",
+    "Bachelor", "B.Sc", "B.S.", "B.A.", "BEng", "Undergraduate",
+    "Associate", "Diploma", "High School", "GED"
+]
+
+# Normalize for matching
+education_rank = {edu.lower(): rank for rank, edu in enumerate(education_levels)}
+
+def extract_highest_education(resume_text):
+    found_levels = []
+
+    for edu in education_levels:
+        pattern = re.compile(rf'\b{edu}\b', re.IGNORECASE)
+        if re.search(pattern, resume_text):
+            found_levels.append(edu.lower())
+
+    if not found_levels:
+        return "No education level found."
+
+    # Get the highest-ranking education found
+    highest = min(found_levels, key=lambda x: education_rank.get(x, float('inf')))
+    return highest
+
+# Example usage
+resume = """
+John Doe is a data scientist with experience in AI and machine learning. 
+He completed his Bachelor of Science in Computer Engineering and recently earned a Master of Science in Data Science from Stanford University.
+"""
+
+print(extract_highest_education(resume))

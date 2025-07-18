@@ -12,6 +12,7 @@ model = SentenceTransformer("joeportnoy/resume-match-ml")
 '''
 
 1. Read Resume
+
 2. Extract information from Resume
     2.1 Years of Exp
     2.2 Skills
@@ -88,11 +89,36 @@ def score_resume(resume_text, job_text):
     # Education Match
     required_degree, preferred_degree = extract_degree_requirements(job_text)
     candidate_degree = extract_most_recent_education(resume_text)
-
+    candidate_degree = extract_highest_education(resume_text)
+    
     degree_levels = ["associate", "bachelor", "mba", "master", "doctorate", "phd"]
+    
+    degree_levels ={
+        "associate": 1, 
+
+        "bachelor": 2, 
+        "bachelor's": 2, 
+        "bachelors": 2, 
+        "undergraduate": 2, 
+        "baccalaureate": 2, 
+
+        "mba": 3, 
+        "master": 3, 
+        "master's": 3, 
+        "masters": 3, 
+        "graduate": 3, 
+        "postgraduate": 3, 
+        "advance": 3, 
+
+        "doctorate": 4, 
+        "phd": 4,
+        "ph.d.": 4,
+        "doctoral": 4,
+        "doctor": 4,
+        }
 
     def degree_rank(degree):
-        return degree_levels.index(degree) if degree in degree_levels else -1
+        return degree_levels[degree] if degree in degree_levels else -1
 
     education_score = 0.0
     education_match = False
