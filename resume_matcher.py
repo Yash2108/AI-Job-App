@@ -1,160 +1,69 @@
-import re
-import json
-import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
-from sentence_transformers import SentenceTransformer
-from collections import defaultdict
+
 from preprocess_utils import *
 from pos_tagger import *
 
-model = SentenceTransformer("joeportnoy/resume-match-ml")
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 
-'''
+import torch
 
-1. Read Resume
 
-2. Extract information from Resume
-    2.1 Years of Exp
-    2.2 Skills
-    2.3 Qualifications
-    2.4 Roles and Experience Details
-    2.5 Education
+SYSTEM_PROMPT='''You are a resume scoring assistant. Score the following resume from 0 to 100 based on how well it matches the job description. Use the following weights:
 
-3. Extract info from Job Description
-    3.1 Skills
-    3.2 Years of Experience required (Qualifications)
-    3.3 Role Description
+Skill Match: 40%
+Responsibility Match: 30%
+Experience Match: 20%
+Education Match: 10%
 
-4. Preprocess
-    4.1 Lowercase
-    4.2 Map Abbreviations
-    4.3 remove stopwords
-    4.4 Lemmatization
+Input format:
+Description:
+<job description>
 
-    
-5. Match the information to get a score
+Resume:
+<resume>
 
-------------------------------------------------------------------------------------------------
-Category	                   | Weight (%)	|    Method
--------------------------------+------------+---------------------------------------------------
-Skill match                    |     40%	|        Keyword match
-Responsibility match	       |     30%	|        Sentence similarity
-Experience match	           |     20%	|        NLP + rule-based: years, roles, industries 
-Education match	               |     10%	|        Degree-level & field matching
--------------------------------------------------------------------------------------------------
+Only respond in the following format:
+Score: <number>
+Reason: <your analysis broken down by each scoring category>
 
-'''
-def get_embedding(text):
-    return model.encode([text])[0]
+Do not include any other text.'''
 
-def similarity_score(text1, text2):
-    emb1 = get_embedding(text1)
-    emb2 = get_embedding(text2)
-    return float(cosine_similarity([emb1], [emb2])[0][0])
+def format_chat(system_prompt, user_input):
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_input}
+    ]
 
-# -----------------------------
-# 4. Core Scoring Engine
-# -----------------------------
-def score_resume(resume_text, job_text):
-    resume_text = preprocess_text(resume_text)
-    job_text = preprocess_text(job_text)
+def parse_input(user_input, model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"):
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        device_map="auto",
+        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32
+    )
+    messages = format_chat(SYSTEM_PROMPT, user_input)
+    input_ids = tokenizer.apply_chat_template(messages, return_tensors="pt").to(model.device)
 
-    work_exp = extract_work_experience_section(resume_text)
-    projects = extract_projects_section(resume_text)
-    education = extract_education_section(resume_text)
-    skills = extract_skills_section(resume_text)
-    years_of_exp = extract_experience_years(work_exp)
-    
-    keywords_resume = []
-    for section in [work_exp, projects, education, skills]:
-        keywords_resume.append(extract_pos_keywords(section))
+    output_ids = model.generate(
+        input_ids,
+        # max_new_tokens=256,
+        do_sample=False,
+        eos_token_id=tokenizer.eos_token_id  # stop generation
+    )
 
-    keywords_resume = set([ word for words in keywords_resume for word in words ])
+    output_text = tokenizer.decode(output_ids[0], skip_special_tokens=True)
+    return output_text
 
-    keywords_jd = extract_pos_keywords(job_text)
+def score_resume(extracted_resume, extracted_jd):
+    input_text = f'''
+    Description:
+    {extracted_jd}
 
-    # Skill Match
-    matched_skills = list(keywords_resume & keywords_jd)
-    missing_skills = list(keywords_jd - keywords_resume)
-    skill_score = len(matched_skills) / max(len(keywords_jd), 1)
+    Resume:
+    {extracted_resume}
+    '''
 
-    # TODO: Figure out how to score experience (For now, set to boolean)
-    # Experience Match (Very basic check for now)
-    jd_experience_required = extract_required_years(extracted_jd)
-    experience_score = 1.0 if jd_experience_required <= years_of_exp else 0.0
+    return parse_input(input_text)
 
-    # TODO: Extract most recent education from resume 
-    # TODO: Identify education required and match it with the most recent education extracted from resume
-    # Education Match (basic)
-    # Education Match
-    required_degree, preferred_degree = extract_degree_requirements(job_text)
-    candidate_degree = extract_most_recent_education(resume_text)
-    candidate_degree = extract_highest_education(resume_text)
-    
-    degree_levels = ["associate", "bachelor", "mba", "master", "doctorate", "phd"]
-    
-    degree_levels ={
-        "associate": 1, 
-
-        "bachelor": 2, 
-        "bachelor's": 2, 
-        "bachelors": 2, 
-        "undergraduate": 2, 
-        "baccalaureate": 2, 
-
-        "mba": 3, 
-        "master": 3, 
-        "master's": 3, 
-        "masters": 3, 
-        "graduate": 3, 
-        "postgraduate": 3, 
-        "advance": 3, 
-
-        "doctorate": 4, 
-        "phd": 4,
-        "ph.d.": 4,
-        "doctoral": 4,
-        "doctor": 4,
-        }
-
-    def degree_rank(degree):
-        return degree_levels[degree] if degree in degree_levels else -1
-
-    education_score = 0.0
-    education_match = False
-
-    if candidate_degree:
-        if required_degree and degree_rank(candidate_degree) >= degree_rank(required_degree):
-            education_score = 1.0
-            education_match = True
-        elif preferred_degree and degree_rank(candidate_degree) >= degree_rank(preferred_degree):
-            education_score = 0.5
-            education_match = True
-
-    # Overall Similarity
-    all_sections = work_exp + projects + education + skills
-    overall_similarity = similarity_score(all_sections, job_text)
-
-    # Weighted Score
-    score = (
-        0.4 * skill_score +
-        0.3 * overall_similarity +
-        0.2 * experience_score +
-        0.1 * education_score
-    ) * 100
-
-    return {
-        "score": round(score, 2),
-        "matched_skills": matched_skills,
-        "missing_skills": missing_skills,
-        "experience_match": experience_score,
-        "education_match": education_match,
-        "notes": f"Matched {len(matched_skills)} of {len(keywords_jd)} key skills."
-    }
-
-# -----------------------------
-# 5. Example Usage
-# -----------------------------
 if __name__ == "__main__":
 
     resume_path = 'resume.pdf'
@@ -163,7 +72,5 @@ if __name__ == "__main__":
     extracted_resume = extract_text_from_pdf(resume_path)
     extracted_jd = read_from_txt(job_description_path)
 
-    # result = score_resume(extracted_resume, extracted_jd)
-    # print(json.dumps(result, indent=2))
-    # print(extract_required_years(extracted_jd))
     print(score_resume(extracted_resume, extracted_jd))
+
