@@ -1,18 +1,22 @@
-
 from preprocess_utils import *
-from pos_tagger import *
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
-import torch
-# from dotenv import load_dotenv
-# import os
+from huggingface_hub import InferenceClient
+import json
+from dotenv import load_dotenv
+import os
+from datetime import datetime
+load_dotenv()
 
-# load_dotenv()
-
-# HF_TOKEN_READ = os.getenv("HF_TOKEN_READ")
+HF_TOKEN_READ = os.getenv("HF_TOKEN_READ")
 # HF_TOKEN_WRITE = os.getenv("HF_TOKEN_WRITE")
 
 
-SYSTEM_PROMPT='''You are a resume scoring assistant. Score the following resume from 0 to 100 based on how well it matches the job description. 
+SYSTEM_PROMPT='''You are a resume scoring assistant. Score the following resume on each parameter from the following metric from 0 to 100:
+
+Skill Match: Look for the skills asked for in the job description and check if they are present in the resume
+Responsibility match: For the responsibilities mentioned in the job description and check if the resume has mentioned them
+Experience match: Count the number of years and domain required in the job description and check if the resume matches the exact requirement
+Education match: Look for the education required and check the resume for a match
+
 Input format:
 Description:
 <job description>
@@ -20,10 +24,33 @@ Description:
 Resume:
 <resume>
 
-Only respond in the following format:
-Score: <number>
+Output in JSON format as follows:
+
+{
+  "Skill Match": [<score>, <reason>],
+  "Responsibility Match": [<score>, <reason>],
+  "Experience Match": [<score>, <reason>],
+  "Education Match": [<score>, <reason>],
+}
 
 Do not include any other text.'''
+
+
+def save_json(data, filename=None):
+    folder_path = "./output_jsons"
+
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path)
+
+    if not filename:
+        filename = datetime.now().strftime("%Y%m%d-%H%M%S")+".json"
+
+    file_path = os.path.join(folder_path, filename)
+
+    with open(file_path, "w") as json_file:
+        json.dump(data, json_file, indent=2)
+    
+    return file_path
 
 def format_chat(system_prompt, user_input):
     return [
@@ -31,65 +58,44 @@ def format_chat(system_prompt, user_input):
         {"role": "user", "content": user_input}
     ]
 
-def use_chat_format(user_input, model_name = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"):
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        device_map="auto",
-        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32
+def inference_llama_3b(user_input):
+    client = InferenceClient(
+        provider="novita",
+        api_key=HF_TOKEN_READ,
     )
     messages = format_chat(SYSTEM_PROMPT, user_input)
-    input_ids = tokenizer.apply_chat_template(messages, return_tensors="pt").to(model.device)
 
-    output_ids = model.generate(
-        input_ids,
-        # max_new_tokens=256,
-        do_sample=False,
-        eos_token_id=tokenizer.eos_token_id  # stop generation
+    completion = client.chat.completions.create(
+        model="meta-llama/Llama-3.1-8B-Instruct",
+        messages=messages,
+        max_tokens=1024
     )
 
-    output_text = tokenizer.decode(output_ids[0], skip_special_tokens=True)
-    return output_text
-
-# Use a pipeline as a high-level helper
-
-def use_text_generation_pipeline(user_input, model = "openai-community/gpt2"):
-    pipe = pipeline("text-generation", model = model)
-    output = pipe(user_input)
-    return output
+    return completion.choices[0].message
 
 def score_resume(extracted_resume, extracted_jd):
-    # input_text = f'''
-    # Description:
-    # {extracted_jd}
+    input_text = f'''
+    Description:
+    {extracted_jd}
 
-    # Resume:
-    # {extracted_resume}
-    # '''
+    Resume:
+    {extracted_resume}
+    '''
+    output = inference_llama_3b(input_text)
 
-    input_text = '''You are a resume scoring assistant. Score the following resume from 0 to 100 based on how well it matches the job description. Use the following weights:
+    match = re.search(r'\{[\s\S]*?\}', output.content)
+    if match:
+        json_text = match.group(0)
+        try:
+            return save_json(data=json.loads(json_text))
+        except Exception as e:
+            print("Couldn't decode JSON. Error:", e)
+            print("original output:", json_text)
 
-Skill Match: 40%
-Responsibility Match: 30%
-Experience Match: 20%
-Education Match: 10%
+    else:
+        print("No JSON found in output:", json_text)
+    return None
 
-Input:
-Description:
-{extracted_jd}
-
-Resume:
-{extracted_resume}
-
-Only respond in the following format:
-Score: <number>
-Reason: <your analysis broken down by each scoring category>
-
-Do not include any other text.
-'''
-    # output = use_chat_format(input_text, model_name="mistralai/Mixtral-8x7B-Instruct-v0.1")
-    output = use_chat_format(input_text)
-    return output
 
 if __name__ == "__main__":
 
@@ -99,5 +105,19 @@ if __name__ == "__main__":
     extracted_resume = extract_text_from_pdf(resume_path)
     extracted_jd = read_from_txt(job_description_path)
 
-    print(score_resume(extracted_resume, extracted_jd))
+    filename = score_resume(extracted_resume, extracted_jd)
+
+    if filename:
+        with open(filename, 'r') as file:
+            data = json.load(file)
+
+        skill_match = data["Skill Match"][0]
+        responsibility_match = data["Responsibility Match"][0]
+        experience_match = data["Experience Match"][0]
+        education_match = data["Education Match"][0]
+
+        data['total_score'] = (skill_match * 0.4) +(responsibility_match * 0.3) + (experience_match * 0.2) + (education_match * 0.1)
+
+        save_json(data=data, filename=filename)
+
 
