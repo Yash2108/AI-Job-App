@@ -44,9 +44,10 @@ def save_json(data, filename=None):
 
     if not filename:
         filename = datetime.now().strftime("%Y%m%d-%H%M%S")+".json"
-
-    file_path = os.path.join(folder_path, filename)
-
+        file_path = os.path.join(folder_path, filename)
+    else:
+        file_path = filename
+        
     with open(file_path, "w") as json_file:
         json.dump(data, json_file, indent=2)
     
@@ -119,5 +120,3 @@ if __name__ == "__main__":
         data['total_score'] = (skill_match * 0.4) +(responsibility_match * 0.3) + (experience_match * 0.2) + (education_match * 0.1)
 
         save_json(data=data, filename=filename)
-
-
